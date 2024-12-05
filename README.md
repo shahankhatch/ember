@@ -37,3 +37,10 @@ The hook calls out to a smart contract written in Stylus to compute the volatili
 ## Pending Tasks
 
 - Dockerize ember-stylus for compilation and deployment
+
+
+## Testing
+
+```
+npx ts-node src/test/integration_with_pools.test.ts -vvvvvv
+```
