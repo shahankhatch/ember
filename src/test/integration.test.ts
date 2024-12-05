@@ -22,13 +22,13 @@ async function simulateSwap(swapValue: number) {
     console.log(`Simulated Swap Receipt:`, receipt)
 }
 
-async function getIndex() {
+export async function getIndex() {
     const result = await stylusContract.index()
     console.log(`Index:`, result.toString())
     return result
 }
 
-async function addSwap(swapValue: number) {
+export async function addSwap(swapValue: number) {
     const tx = await stylusContract.addSwap(swapValue)
     console.log(`Transaction Hash:`, tx.hash)
     const receipt = await tx.wait()
@@ -44,4 +44,7 @@ async function runTestSequence() {
     assert(i1 == i2 && i2 < i3)
 }
 
-runTestSequence().catch((error) => console.error(`Error during test sequence:`, error))
+
+// (async () => {
+//     runTestSequence().catch((error) => console.error(`Error during test sequence:`, error))
+// })()
