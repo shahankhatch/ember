@@ -8,7 +8,6 @@ import EmberERC20 from "../../../ember-hook/out/EmberERC20.sol/EmberERC20.json"
 import Quoter from "../../../ember-hook/out/Quoter.sol/Quoter.json"
 import Create2Deployer from "../../../ember-hook/out/Create2Deployer.sol/Create2Deployer.json"
 import HM from "../../../ember-hook/out/HM.sol/HM.json"
-// import Hooks from "../../../ember-hook/out/Hooks.sol/Hooks.json"
 import VolatilityFeesHook from "../../../ember-hook/out/VolatilityFeesHook.sol/VolatilityFeesHook.json"
 import Currency from "../../../ember-hook/out/Currency.sol/CurrencyLibrary.json"
 import EmberPoolManager from "../../../ember-hook/out/EmberPoolManager.sol/EmberPoolManager.json"
@@ -57,6 +56,8 @@ export function sortContractsByAddress(token0: BaseContract, token1: BaseContrac
 }
 
 export async function deployFull() {
+    const quotes: any[] = []
+
     // send some eth from ownerWallet to wallet
     const tx = await ownerWallet.sendTransaction({
         to: account0.address,
@@ -68,6 +69,10 @@ export async function deployFull() {
     await poolManagerD.waitForDeployment()
     const poolManager = new ethers.Contract(poolManagerD.target, PoolManager.abi, account0)
     console.log("PoolManager deployed at: ", poolManager.target)
+
+    // poolManager.on("*", (eventName, ...args) => {
+    //     console.log("PoolManager event: ", eventName, args)
+    // })
 
     const swapRouterF = new ethers.ContractFactory(PoolSwapTest.abi, PoolSwapTest.bytecode.object, account0)
     const swapRouterD = await swapRouterF.deploy(poolManager.target)
@@ -87,11 +92,6 @@ export async function deployFull() {
     const token0 = new ethers.Contract(token0D.target, EmberERC20.abi, account0)
     const token1 = new ethers.Contract(token1D.target, EmberERC20.abi, account0)
 
-    // token0.initialize.send().then((tx) => tx.wait())
-    // console.log("Token0 initialized")
-    // token1.initialize.send().then((tx) => tx.wait())
-    // console.log("Token1 initialized")
-
     const mintAmount = ethers.parseEther(BigInt(10000).toString())
 
     await token0.mint(account0.address, mintAmount).then((tx) => tx.wait())
@@ -103,7 +103,6 @@ export async function deployFull() {
     const [currency0, currency1] = sortContractsByAddress(token0, token1)
     console.log("Sorted tokens")
 
-    // await new Promise(async resolve => setTimeout(resolve, 4000))
     const create2DeployerF = new ethers.ContractFactory(Create2Deployer.abi, Create2Deployer.bytecode.object, account0)
     const create2DeployerD = await create2DeployerF.deploy().then(tx => tx.waitForDeployment())
     await create2DeployerD.waitForDeployment().then()
@@ -152,9 +151,6 @@ export async function deployFull() {
 
     await create2Deployer.deploy(0, salt, codeHashWithConstructorArgs).then(tx => tx.wait())
     console.log("Deployed hook to address: ", hookAddress)
-    // await hook_deployment.waitForDeployment().then()
-
-    // const hook = new ethers.Contract(hookAddress, VolatilityFeesHook.abi, account0)
 
     const sqrtPriceX96 = BigInt("79228162514264337593543950336")
     const fee = 500
@@ -186,8 +182,6 @@ export async function deployFull() {
 
     console.log("Approved tokens")
 
-    // await seedMoreLiquidity(poolKey, ethers.parseEther("10"), ethers.utils.parseEther("10"))
-
     async function seedMoreLiquidity(poolKey: any, amount0: bigint, amount1: bigint) {
         const LIQUIDITY_PARAMS = {
             tickLower: -120,
@@ -213,20 +207,8 @@ export async function deployFull() {
         }
 
         await modifyLiquidityRouter.modifyLiquidity(poolKey, params, ZERO_BYTES, { gas: 4000000 }).then(tx => tx.wait())
-        // await emberPoolManager.seedMoreLiquidity(poolManager.target, modifyLiquidityRouter.target, poolKey, amount0, amount1, { gas: 2000000 })
         console.log("Liquidity seeded")
-        // return 1
     }
-
-    poolManager.on("*", (eventName, ...args) => {
-        console.log(`Event: ${eventName.eventName}: ${eventName.args}`)
-        // console.log(eventName)
-        // console.log(args.toString())
-    })
-
-    quoter.on("*", (eventName, ...args) => {
-        console.log(`Event: ${eventName.eventName}: ${eventName.args}`)
-    })
 
     const liquidity_amt = ethers.parseEther("1.0")
     await seedMoreLiquidity(poolKey, liquidity_amt, liquidity_amt).then(tx => tx)
@@ -255,141 +237,61 @@ export async function deployFull() {
     await token0.allowance(account0.address, quoter.target).then(console.log)
     await token1.allowance(account0.address, quoter.target).then(console.log)
 
+    await new Promise<void>((resolve) => {
+        quoter.once("QuoteEvent", (deltaAmounts, sqrtPriceX96After, initalizedTicksLoaded, ...args) => {
+            quotes.push([deltaAmounts, sqrtPriceX96After, initalizedTicksLoaded])
+            resolve()
+        })
 
+        quoter.quoteExactInputSingle(quoteParams).then(tx => tx.wait())
+    })
 
-    console.log("trying...")
+    console.log("Last quote: ", quotes[quotes.length - 1])
+
+    const swapParams = {
+        zeroForOne: zeroForOne,
+        amountSpecified: 1,
+        sqrtPriceLimitX96: zeroForOne ? MIN_PRICE_LIMIT : MAX_PRICE_LIMIT,
+    }
+
+    const testSettings = {
+        takeClaims: false,
+        settleUsingBurn: false
+    }
 
     try {
-        await quoter.quoteExactInputSingle(quoteParams)
-    } catch (error) {
-        const e: any = error
-        console.error("Error caught:", error)
+        for (let i = 0; i < 10; i++) {
+            console.log("Swap iteration: ", i)
 
-        if (e.data) {
-            // Decode revert data manually
-            console.log("Raw revert data:", e.data)
+            console.log("Before swap")
+            await token0.balanceOf(account0.address).then(console.log)
+            await token1.balanceOf(account0.address).then(console.log)
 
-            // Try decoding using the ABI
-            try {
-                const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-                    ["int128[]", "uint160", "uint32"], // Expected revert data structure
-                    "0x" + e.data.slice(10) // Skip selector if present
-                )
-                console.log("Decoded revert data:", decoded)
-            } catch (decodeError) {
-                console.error("Error decoding revert data:", decodeError)
-            }
-        } else {
-            console.error("No revert data available")
+            await swapRouter.swap(poolKey,
+                swapParams,
+                testSettings,
+                ZERO_BYTES,
+            ).then(tx => tx.wait())
+
+            console.log("After swap")
+            await token0.balanceOf(account0.address).then(console.log)
+            await token1.balanceOf(account0.address).then(console.log)
         }
+
+    } catch (e) {
+        console.error("Error: ", e)
     }
 
-
-    try {
-        const response = await quoter.quoteExactInputSingle(quoteParams)
-        console.log("quote response:", response)
-
-        const receipt = await response.wait().then(tx)
-        console.log("quote receipt:", receipt);
-
-        // const txHash = receipt.hash
-
-        (async function () {
-            const txData = await provider.getTransaction(receipt.hash)
-
-            if (txData == null) {
-                throw new Error('Transaction not found')
-            }
-            let modifiedTxData = {
-                ...txData
-            }
-
-            // IMPORTANT! Otherwise the mock call will fail because these fields cannot co-exist...
-            if (txData.gasPrice) {
-                modifiedTxData.maxFeePerGas = null
-                modifiedTxData.maxPriorityFeePerGas = null
-            }
-
-            try {
-                const res = await provider.call(modifiedTxData)
-
-                console.log({ res })
-
-                const errorReasonMessage = ethers.toUtf8String('0x' + res.substring(138)).replaceAll('\x00', '') // clear the empty bytes
-
-                console.log({ errorReasonMessage })
-            }
-            catch (err) {
-                console.log({ err })
-            }
-        })()
-
-        const { deltaAmounts, sqrtPriceX96After, initializedTicksLoaded } = await quoter.quoteExactInputSingle(quoteParams).then(tx => tx.wait())
-        console.log("quote Success")
-        console.log(deltaAmounts[0].toString())
-        console.log(deltaAmounts[1].toString())
-        console.log(sqrtPriceX96After.toString())
-        console.log(initializedTicksLoaded.toString())
-    } catch (error) {
-        console.log("quote Failed")
-        console.log(error)
-    }
+    console.log("end of deployFull")
 
 }
-// export async function loadDeploy() {
-//     const privateKey = '0xb6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659'
 
-
-//     const deployAddress = "0x5b73C5498c1E3b4dbA84de0F1833c4a029d90519"
-//     const provider = new ethers.JsonRpcProvider('http://localhost:8547')
-//     const wallet = new ethers.Wallet(privateKey, provider)
-//     const deployContract = new ethers.Contract(deployAddress, Deploy.abi, wallet)
-
-//     await deployContract.run()
-//     const slot0 = await deployContract.getSlot0()
-//     const [sqrtPriceX96, tick, protocolFee, lpFee] = slot0
-//     console.log("sqrtPriceX96:", sqrtPriceX96.toString())
-//     console.log("tick:", tick.toString())
-//     console.log("protocolFee:", protocolFee.toString())
-//     console.log("lpFee:", lpFee.toString())
-//     console.log(`Index: `, deployContract.id)
-//     // console.log(`Index: `, idx)
-// }
-
-// export async function deployDeploy() {
-//     // Specify the private key
-//     const privateKey = '0xb6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659'
-
-//     // Create a wallet instance
-//     const provider = new ethers.JsonRpcProvider('http://localhost:8547')
-//     const wallet = new ethers.Wallet(privateKey, provider)
-
-//     // Deploy the Deploy contract. The bytecode for the contract is located at path ["bytecode"]["object"]
-//     const deployContract = new ethers.ContractFactory(Deploy.abi, Deploy.bytecode.object, wallet)
-
-//     // Optionally, you can deploy the contract
-//     const contract = await deployContract.deploy()
-//     console.log('Contract deployed:', contract)
-// }
-
-export async function loadPool() {
+export async function doStylusSwap() {
     await integrationTest.addSwap(1)
     const idx = await integrationTest.getIndex()
     console.log(`Index: `, idx.toString())
 }
 
-export async function loadPoolManager() {
-    const poolManagerAddress = "0x9E545E3C0baAB3E08CdfD552C960A1050f373042"
-    const poolManagerContract = new ethers.Contract(poolManagerAddress, IPoolManager.abi)
-    await poolManagerContract.getSlot0(0x3c9a2ae2d128290e61753ce857c9e644472e4baf63a9f0789626ef9ad6f70a45)
-    // const stateLibaryContract = new ethers.Contract()
-    // await StateLibrary.getSlot0(poolManagerContract, 0xbe4e6818c12f488c0e23cd04702a315f4207b473cbb362cfc07b45b2a2ebf494)
-}
-
 (async () => {
-    // await loadPool()
-    // await loadPoolManager()
-    // loadDeploy()
-    // deployDeploy()
     deployFull()
 })()
