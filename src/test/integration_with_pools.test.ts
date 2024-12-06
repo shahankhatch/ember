@@ -13,12 +13,13 @@ import Currency from "../../../ember-hook/out/Currency.sol/CurrencyLibrary.json"
 import EmberPoolManager from "../../../ember-hook/out/EmberPoolManager.sol/EmberPoolManager.json"
 import LiquidityAmounts from "../../../ember-hook/out/LiquidityAmounts.sol/LiquidityAmounts.json"
 
-const chainOwnerPrivateKey = '0xb6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659'
+const chainOwnerPrivateKey = integrationTest.PRIVATE_KEY
 const privateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-const volatilityCalculatorAddress = "0xA6E41fFD769491a42A6e5Ce453259b93983a22EF"
+const volatilityCalculatorAddress = integrationTest.stylusAddress
 
 const BEFORE_SWAP_FLAG = BigInt(1) << BigInt(7)
 const AFTER_SWAP_FLAG = BigInt(1) << BigInt(6)
+const AFTER_SWAP_RETURNS_DELTA_FLAG = BigInt(1) << BigInt(2)
 
 const MIN_PRICE_LIMIT = BigInt("4295128740") + BigInt(1)
 const MAX_PRICE_LIMIT = BigInt("1461446703485210103287273052203988822378723970342") - BigInt(1)
@@ -42,7 +43,6 @@ const provider = new ethers.JsonRpcProvider('http://localhost:8547', arbitrum_on
 // provider.on("network", console.log)
 
 const wallet = new ethers.Wallet(privateKey, provider)
-const ownerWallet = new ethers.Wallet(chainOwnerPrivateKey, provider)
 const account0 = wallet
 
 export function sortContractsByAddress(token0: BaseContract, token1: BaseContract): [BaseContract, BaseContract] {
@@ -59,7 +59,7 @@ export async function deployFull() {
     const quotes: any[] = []
 
     // send some eth from ownerWallet to wallet
-    const tx = await ownerWallet.sendTransaction({
+    const tx = await integrationTest.ownerWallet.sendTransaction({
         to: account0.address,
         value: ethers.parseEther("1.0")
     })
@@ -129,9 +129,9 @@ export async function deployFull() {
         try {
             [hookAddress, salt] = await hookMiner.find(
                 create2Deployer.target,
-                BEFORE_SWAP_FLAG | AFTER_SWAP_FLAG,
+                AFTER_SWAP_FLAG | AFTER_SWAP_RETURNS_DELTA_FLAG,
                 ethers.solidityPacked(["bytes"], [VolatilityFeesHook.bytecode.object]),
-                ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "address"], [poolManager.target, volatilityCalculatorAddress, quoter.target]
+                ethers.AbiCoder.defaultAbiCoder().encode(["address", "address"], [poolManager.target, volatilityCalculatorAddress]
                 ),
                 { gas: 10000000 }
             )
@@ -146,11 +146,19 @@ export async function deployFull() {
 
     const codeHashWithConstructorArgs = ethers.solidityPacked(
         ["bytes", "bytes"],
-        [VolatilityFeesHook.bytecode.object, ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "address"], [poolManager.target, volatilityCalculatorAddress, quoter.target])]
+        [VolatilityFeesHook.bytecode.object, ethers.AbiCoder.defaultAbiCoder().encode(["address", "address"], [poolManager.target, volatilityCalculatorAddress])]
     )
 
     await create2Deployer.deploy(0, salt, codeHashWithConstructorArgs).then(tx => tx.wait())
     console.log("Deployed hook to address: ", hookAddress)
+
+    integrationTest.getVolatility().then(console.log)
+    const hookContract = new ethers.Contract(hookAddress, VolatilityFeesHook.abi, account0)
+    hookContract.on("*", (id: any, ...args) => {
+        console.log(`Mark: `, id, args)
+        integrationTest.getVolatility().then(console.log)
+        console.log()
+    })
 
     const sqrtPriceX96 = BigInt("79228162514264337593543950336")
     const fee = 500
@@ -250,7 +258,7 @@ export async function deployFull() {
 
     const swapParams = {
         zeroForOne: zeroForOne,
-        amountSpecified: 1,
+        amountSpecified: 10,
         sqrtPriceLimitX96: zeroForOne ? MIN_PRICE_LIMIT : MAX_PRICE_LIMIT,
     }
 
@@ -264,8 +272,14 @@ export async function deployFull() {
             console.log("Swap iteration: ", i)
 
             console.log("Before swap")
+            console.log("Account:")
             await token0.balanceOf(account0.address).then(console.log)
             await token1.balanceOf(account0.address).then(console.log)
+            console.log("PoolManager:")
+            await token0.balanceOf(poolManager.target).then(console.log)
+            await token1.balanceOf(poolManager.target).then(console.log)
+            console.log("VolatilityContract:")
+            await integrationTest.getVolatility()
 
             await swapRouter.swap(poolKey,
                 swapParams,
@@ -274,8 +288,14 @@ export async function deployFull() {
             ).then(tx => tx.wait())
 
             console.log("After swap")
+            console.log("Account:")
             await token0.balanceOf(account0.address).then(console.log)
             await token1.balanceOf(account0.address).then(console.log)
+            console.log("PoolManager:")
+            await token0.balanceOf(poolManager.target).then(console.log)
+            await token1.balanceOf(poolManager.target).then(console.log)
+            console.log("VolatilityContract:")
+            await integrationTest.getVolatility()
         }
 
     } catch (e) {
