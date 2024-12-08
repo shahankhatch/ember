@@ -12,7 +12,8 @@ import VolatilityFeesHook from "../../../ember-hook/out/VolatilityFeesHook.sol/V
 import Currency from "../../../ember-hook/out/Currency.sol/CurrencyLibrary.json"
 import EmberPoolManager from "../../../ember-hook/out/EmberPoolManager.sol/EmberPoolManager.json"
 import LiquidityAmounts from "../../../ember-hook/out/LiquidityAmounts.sol/LiquidityAmounts.json"
-import { Field, ProofRequest, Prover, ReceiptData } from 'brevis-sdk-typescript'
+import EmberBrevis from "../../../ember-hook/out/EmberBrevis.sol/EmberBrevis.json"
+import { Brevis, ErrCode, ProofRequest, Prover, ReceiptData, Field } from 'brevis-sdk-typescript'
 
 const chainOwnerPrivateKey = integrationTest.PRIVATE_KEY
 const privateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
@@ -268,6 +269,7 @@ export async function deployFull() {
         settleUsingBurn: false
     }
 
+    const rcpts = []
     try {
         for (let i = 0; i < 10; i++) {
             console.log("Swap iteration: ", i)
@@ -282,11 +284,12 @@ export async function deployFull() {
             console.log("VolatilityContract:")
             await integrationTest.getVolatility()
 
-            await swapRouter.swap(poolKey,
+            const rcpt = await swapRouter.swap(poolKey,
                 swapParams,
                 testSettings,
                 ZERO_BYTES,
             ).then(tx => tx.wait())
+            rcpts.push(rcpt)
 
             console.log("After swap")
             console.log("Account:")
@@ -307,44 +310,71 @@ export async function deployFull() {
 
     console.log("Starting brevis integration path")
 
-    // Assuming you started your prover service on port 33247, this is how you
-    // initialize a client in your NodeJS program to interact with it.
+    // deploy the EmberBrevis contract
+    const emberBrevisF = new ethers.ContractFactory(EmberBrevis.abi, EmberBrevis.bytecode, account0)
+    const emberBrevisD = await emberBrevisF.deploy(poolManager.target).then(tx => tx.waitForDeployment())
+    await emberBrevisD.waitForDeployment()
+    const emberBrevis = new ethers.Contract(emberBrevisD.target, EmberBrevis.abi, account0)
+    console.log("EmberBrevis deployed at: ", emberBrevis.target)
+    console.log("Connecting EmberBrevis to hook, and vice versa")
+    await emberBrevis.setHookAddress(hookAddress)
+    await hookContract.setBrevisIntegration(emberBrevis.target)
+
     const prover = new Prover('localhost:33247')
     const proofReq = new ProofRequest()
 
-    // add a receipt for each event
-    lowVolatilityEvents.forEach((event) => {
+    console.log(lowVolatilityEvents)
+    lowVolatilityEvents.forEach((_event, i) => {
+        const event = _event[3]
+
         proofReq.addReceipt(
             new ReceiptData({
                 tx_hash: event.log.transactionHash,
                 block_num: event.log.blockNumber,
                 fields: [
                     new Field({
+                        log_pos: 1,
                         event_id: event.log.topics[0],
-                        log_pos: 0,
-                        is_topic: false,
-                        field_index: 0,
-                        value: event.args[0][4], // hook address (avoids indexing both currencies)
+                        // field_index: 0,
+                        value: _event[0], // hook address (avoids indexing both currencies)
                     }),
                     new Field({
+                        log_pos: 1,
                         event_id: event.log.topics[0],
-                        log_pos: 0,
-                        is_topic: false,
                         field_index: 1,
-                        value: event.args[2], // old vol
+                        value: _event[1].toString(), // old vol
                     }),
                     new Field({
+                        log_pos: 1,
                         event_id: event.log.topics[0],
-                        log_pos: 0,
-                        is_topic: false,
                         field_index: 2,
-                        value: event.args[3] // new vol
+                        value: _event[2].toString() // new vol
                     }),
                 ],
             }),
         )
     })
 
+    const proofRes = await prover.prove(proofReq)
+    // error handling
+    if (proofRes.has_err) {
+        const err = proofRes.err
+        switch (err.code) {
+            case ErrCode.ERROR_INVALID_INPUT:
+                console.error('invalid receipt/storage/transaction input:', err.msg)
+                break
+
+            case ErrCode.ERROR_INVALID_CUSTOM_INPUT:
+                console.error('invalid custom input:', err.msg)
+                break
+
+            case ErrCode.ERROR_FAILED_TO_PROVE:
+                console.error('failed to prove:', err.msg)
+                break
+        }
+        return
+    }
+    console.log('proof', proofRes.proof)
 
 }
 
