@@ -1,7 +1,9 @@
 # ember
-Volatility-based dynamic fees. UHI3 Hookathon.
+Uniswap V4 volatility-based dynamic fees. UHI3 Hookathon.
 
-A user will pay higher or lower swap fees based on whether they increase volatility or decrease volatility.
+A user will pay higher swap fees if they increase volatility, or lower swap fees if they decrease volatility.
+
+They Uniswap V4 hook is backed by a smart contract that can calculate volatility, which is written in Arbitrum Stylus.
 
 ## Architecture
 
