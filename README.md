@@ -1,7 +1,7 @@
 # ember
 Volatility-based dynamic fees. UHI3 Hookathon.
 
-A user will pay higher or lower swap fees based on current volatility.
+A user will pay higher or lower swap fees based on whether they increase volatility or decrease volatility.
 
 ## Architecture
 
