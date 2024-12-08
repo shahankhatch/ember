@@ -12,6 +12,7 @@ import VolatilityFeesHook from "../../../ember-hook/out/VolatilityFeesHook.sol/V
 import Currency from "../../../ember-hook/out/Currency.sol/CurrencyLibrary.json"
 import EmberPoolManager from "../../../ember-hook/out/EmberPoolManager.sol/EmberPoolManager.json"
 import LiquidityAmounts from "../../../ember-hook/out/LiquidityAmounts.sol/LiquidityAmounts.json"
+import { Field, ProofRequest, Prover, ReceiptData } from 'brevis-sdk-typescript'
 
 const chainOwnerPrivateKey = integrationTest.PRIVATE_KEY
 const privateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
@@ -57,6 +58,7 @@ export function sortContractsByAddress(token0: BaseContract, token1: BaseContrac
 
 export async function deployFull() {
     const quotes: any[] = []
+    const lowVolatilityEvents: any[] = []
 
     // send some eth from ownerWallet to wallet
     const tx = await integrationTest.ownerWallet.sendTransaction({
@@ -154,10 +156,9 @@ export async function deployFull() {
 
     integrationTest.getVolatility().then(console.log)
     const hookContract = new ethers.Contract(hookAddress, VolatilityFeesHook.abi, account0)
-    hookContract.on("*", (id: any, ...args) => {
-        console.log(`Mark: `, id, args)
-        integrationTest.getVolatility().then(console.log)
-        console.log()
+    hookContract.on("LowVolatility", (eventHookAddress, beforeVolatility, afterVolatility, eventItself) => {
+        console.log("Low volatility event")
+        lowVolatilityEvents.push([eventHookAddress, beforeVolatility, afterVolatility, eventItself])
     })
 
     const sqrtPriceX96 = BigInt("79228162514264337593543950336")
@@ -303,6 +304,47 @@ export async function deployFull() {
     }
 
     console.log("end of deployFull")
+
+    console.log("Starting brevis integration path")
+
+    // Assuming you started your prover service on port 33247, this is how you
+    // initialize a client in your NodeJS program to interact with it.
+    const prover = new Prover('localhost:33247')
+    const proofReq = new ProofRequest()
+
+    // add a receipt for each event
+    lowVolatilityEvents.forEach((event) => {
+        proofReq.addReceipt(
+            new ReceiptData({
+                tx_hash: event.log.transactionHash,
+                block_num: event.log.blockNumber,
+                fields: [
+                    new Field({
+                        event_id: event.log.topics[0],
+                        log_pos: 0,
+                        is_topic: false,
+                        field_index: 0,
+                        value: event.args[0][4], // hook address (avoids indexing both currencies)
+                    }),
+                    new Field({
+                        event_id: event.log.topics[0],
+                        log_pos: 0,
+                        is_topic: false,
+                        field_index: 1,
+                        value: event.args[2], // old vol
+                    }),
+                    new Field({
+                        event_id: event.log.topics[0],
+                        log_pos: 0,
+                        is_topic: false,
+                        field_index: 2,
+                        value: event.args[3] // new vol
+                    }),
+                ],
+            }),
+        )
+    })
+
 
 }
 
